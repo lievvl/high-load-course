@@ -9,6 +9,7 @@ import okhttp3.RequestBody
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import ru.quipy.core.EventSourcingService
+import ru.quipy.payments.Service.AccountService
 import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
@@ -18,7 +19,7 @@ import java.util.concurrent.Executors
 
 // Advice: always treat time as a Duration
 class PaymentExternalServiceImpl(
-    private val properties: ExternalServiceProperties,
+    private val accountService: AccountService,
 ) : PaymentExternalService {
 
     companion object {
