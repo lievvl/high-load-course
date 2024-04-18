@@ -2,6 +2,7 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import okhttp3.*
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
@@ -116,6 +117,8 @@ class PaymentExternalServiceImpl(
 //        logger.warn("${account.queue.peek().paymentStartedAt}")
 
         account.processExecutor.submit {
+            while(!account.circuitBreaker.canProceed()){
+            }
             account.bulkhead.acquirePermission();
             processPaymentRequest(account)
             account.bulkhead.releasePermission()
@@ -126,7 +129,7 @@ class PaymentExternalServiceImpl(
         val request = account.queue.poll()
 
         logger.warn("[{${account.accountConfig.accountName}}] Estimated processing time for {${request.paymentId}} is ${account.getProcessingTimeIfInserting(request)}")
-        if (account.getProcessingTimeIfInserting(request) > paymentOperationTimeout.seconds) {
+        if (account.timeStatistics.getAverage() + (now() - request.paymentStartedAt) / 1000 > paymentOperationTimeout.seconds) {
             failedTransaction(request, "Cannot process ${request.paymentId}: Enqueued, but failed to be in time")
             return
         }
@@ -135,8 +138,9 @@ class PaymentExternalServiceImpl(
             url("http://localhost:1234/external/process?serviceName=${account.accountConfig.serviceName}&accountName=${account.accountConfig.accountName}&transactionId=${request.transactionId}")
             post(emptyBody)
         }.build()
-
-        while(!account.rateLimiter.acquirePermission()){
+        while(!account.rateLimiter.acquirePermission()) {
+        }
+        while(!account.circuitBreaker.canMakeCall()) {
         }
         account.httpClient.newCall(httpRequest).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
@@ -159,6 +163,7 @@ class PaymentExternalServiceImpl(
                     }
                     accountService.resetRateLimit()
                     account.resetRateLimiter()
+                    account.circuitBreaker.submitFailure()
                 }
             }
 
@@ -180,6 +185,7 @@ class PaymentExternalServiceImpl(
                     logger.warn("Success now is ${processedSuccess.incrementAndGet()}")
                     accountService.resetRateLimit()
                     account.resetRateLimiter()
+                    account.circuitBreaker.submitSuccess()
                 }
             }
         })

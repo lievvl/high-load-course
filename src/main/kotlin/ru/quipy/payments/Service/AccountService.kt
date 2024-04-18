@@ -30,10 +30,19 @@ class AccountService {
     )
 
     public fun enqueueAndGetAccount(paymentRequest: PaymentRequest): Account? {
+        var accountInHalfOpen: Account? = null
         for (account in accounts) {
+            if (!account.circuitBreaker.canProceed()){
+                accountInHalfOpen = account
+            }
             if(account.tryEnqueue(paymentRequest)) {
                 return account
             }
+        }
+        if (accountInHalfOpen != null) {
+            while(!accountInHalfOpen.circuitBreaker.canProceed()) {
+            }
+            return enqueueAndGetAccount(paymentRequest)
         }
         return null;
     }
