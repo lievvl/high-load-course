@@ -32,9 +32,9 @@ class Account(
     val callbackExecutor = Executors.newFixedThreadPool(accountConfig.parallelRequests, NamedThreadFactory("callback-${accountConfig.accountName}"))
 
     val httpClient = OkHttpClient.Builder()
-        .dispatcher(Dispatcher(httpExecutor).apply { maxRequests = accountConfig.parallelRequests; maxRequestsPerHost = accountConfig.parallelRequests })
+        .dispatcher(Dispatcher(httpExecutor).apply { maxRequests = 200; maxRequestsPerHost = 500 })
         .protocols(Collections.singletonList(Protocol.H2_PRIOR_KNOWLEDGE))
-        .connectionPool(ConnectionPool(accountConfig.parallelRequests, PaymentExternalServiceImpl.paymentOperationTimeout.seconds, TimeUnit.SECONDS))
+        .connectionPool(ConnectionPool(100, 5, TimeUnit.MINUTES))
         .build()
 
     val queue = LinkedBlockingQueue<PaymentRequest>()
