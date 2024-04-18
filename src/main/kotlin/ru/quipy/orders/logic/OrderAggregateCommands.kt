@@ -3,6 +3,7 @@ package ru.quipy.orders.logic
 import ru.quipy.domain.Event
 import ru.quipy.orders.api.*
 import java.util.*
+import kotlin.random.Random
 
 
 fun OrderAggregateState.create(id: UUID, userId: UUID): OrderCreatedEvent {
@@ -86,9 +87,14 @@ fun OrderAggregateState.setPaymentResults(
 }
 
 fun OrderAggregateState.startPayment(): OrderPaymentStartedEvent {
-    return OrderPaymentStartedEvent(
-        orderId = this.getId(),
-        paymentId = UUID.randomUUID(),
-        100
-    )
+    return when (this.status) {
+        OrderStatus.BOOKED, OrderStatus.COLLECTING, OrderStatus.DELIVERY_SET, OrderStatus.PAYMENT_FAILED -> {
+            OrderPaymentStartedEvent(
+                orderId = this.getId(),
+                paymentId = UUID.randomUUID(),
+                this.priceToPay ?: Random.nextInt(100, 2000),
+            )
+        }
+        else -> error("Order is in status ${this.status}, cannot start payment")
+    }
 }
