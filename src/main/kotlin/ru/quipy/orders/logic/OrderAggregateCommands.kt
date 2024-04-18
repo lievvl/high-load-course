@@ -86,18 +86,9 @@ fun OrderAggregateState.setPaymentResults(
 }
 
 fun OrderAggregateState.startPayment(): OrderPaymentStartedEvent {
-    return when (this.status) {
-        OrderStatus.BOOKED, OrderStatus.DELIVERY_SET, OrderStatus.PAYMENT_FAILED -> {
-            if (bookingId != null) {
-                OrderPaymentStartedEvent(
-                    orderId = this.getId(),
-                    paymentId = UUID.randomUUID(),
-                    this.priceToPay!!,
-                )
-            } else {
-                error("Booking is not success or delivery is not set")
-            }
-        }
-        else -> error("Order is in status ${this.status}, cannot start payment")
-    }
+    return OrderPaymentStartedEvent(
+        orderId = this.getId(),
+        paymentId = UUID.randomUUID(),
+        100
+    )
 }

@@ -58,7 +58,25 @@ class ExternalServicesConfig(
             cost = 30,
         )
 
-        val usedAccounts = listOf(accountProps_2, accountProps_3, accountProps_4)
+        private val accountProps_42 = ExternalServiceProperties(
+            "test",
+            "default-42",
+            parallelRequests = 8,
+            rateLimitPerSec = 5,
+            request95thPercentileProcessingTime = Duration.ofMillis(10_000),
+            cost = 30,
+        )
+
+        private val accountProps_5 = ExternalServiceProperties(
+            "test",
+            "default-5",
+            parallelRequests = 8,
+            rateLimitPerSec = 5,
+            request95thPercentileProcessingTime = Duration.ofMillis(10_000),
+            cost = 30,
+        )
+
+        val usedAccounts = listOf(accountProps_42, accountProps_5)
     }
 
     @Bean(PRIMARY_PAYMENT_BEAN)
