@@ -131,14 +131,13 @@ class PaymentExternalServiceImpl(
             return
         }
 
-        while(!account.rateLimiter.acquirePermission()){
-        }
-
         val httpRequest = Request.Builder().run {
             url("http://localhost:1234/external/process?serviceName=${account.accountConfig.serviceName}&accountName=${account.accountConfig.accountName}&transactionId=${request.transactionId}")
             post(emptyBody)
         }.build()
 
+        while(!account.rateLimiter.acquirePermission()){
+        }
         account.httpClient.newCall(httpRequest).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 account.callbackExecutor.submit {

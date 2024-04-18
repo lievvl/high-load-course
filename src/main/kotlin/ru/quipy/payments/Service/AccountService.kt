@@ -18,7 +18,7 @@ class AccountService {
     private val accounts = ExternalServicesConfig.usedAccounts.map { Account(it) }.sortedBy { it.accountConfig.cost }
 
     public val incomingQueue = LinkedBlockingQueue<PaymentRequest>(3000)
-    public val incomingExecutor = Executors.newFixedThreadPool(3);
+    public val incomingExecutor = Executors.newFixedThreadPool(2)
 
     val rateLimiter = RateLimiter.of(
         "incoming-ratelimiter",
