@@ -17,6 +17,7 @@ import java.util.*
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
 
 
 // Advice: always treat time as a Duration
@@ -31,6 +32,7 @@ class PaymentExternalServiceImpl(
 
         val emptyBody = RequestBody.create(null, ByteArray(0))
         val mapper = ObjectMapper().registerKotlinModule()
+        val processedSuccess = AtomicInteger(0);
     }
 
     @Autowired
@@ -89,7 +91,6 @@ class PaymentExternalServiceImpl(
 //        }
 //    }
     override fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
-        logger.warn("${accountService.incomingQueue.peek().paymentStartedAt}")
         logger.warn("Starting processing ${paymentId}, ${paymentStartedAt}")
         val request = PaymentRequest(paymentId, UUID.randomUUID(), amount, paymentStartedAt)
         if (!isOnTime(paymentStartedAt)) {
@@ -98,18 +99,14 @@ class PaymentExternalServiceImpl(
         }
         accountService.incomingQueue.add(request)
         accountService.incomingExecutor.submit {
-            while(!accountService.rateLimiter.acquirePermission()){
+            while(!accountService.rateLimiter.acquirePermission()) {
                 continue
             }
             enqueuePaymentRequest()
         }
-}
+    }
     private fun enqueuePaymentRequest() {
         val paymentRequest = accountService.incomingQueue.poll()
-        if (!isOnTime(paymentRequest.paymentStartedAt)) {
-            failedTransaction(paymentRequest, "Cannot process ${paymentRequest.paymentId} because its too late!")
-            return
-        }
         val account = accountService.enqueueAndGetAccount(paymentRequest)
         if (account == null) {
             failedTransaction(paymentRequest, "Cannot process ${paymentRequest.paymentId}: Cannot euqueue request")
@@ -119,16 +116,22 @@ class PaymentExternalServiceImpl(
 //        logger.warn("${account.queue.peek().paymentStartedAt}")
 
         account.processExecutor.submit {
+            account.bulkhead.acquirePermission();
             processPaymentRequest(account)
+            account.bulkhead.releasePermission()
         }
     }
 
     private fun processPaymentRequest(account: Account) {
         val request = account.queue.poll()
 
-        if (!isOnTime(request.paymentStartedAt)) {
+        logger.warn("[{${account.accountConfig.accountName}}] Estimated processing time for {${request.paymentId}} is ${account.getProcessingTimeIfInserting(request)}")
+        if (account.getProcessingTimeIfInserting(request) > paymentOperationTimeout.seconds) {
             failedTransaction(request, "Cannot process ${request.paymentId}: Enqueued, but failed to be in time")
             return
+        }
+
+        while(!account.rateLimiter.acquirePermission()){
         }
 
         val httpRequest = Request.Builder().run {
@@ -136,14 +139,11 @@ class PaymentExternalServiceImpl(
             post(emptyBody)
         }.build()
 
-        logger.warn("[${account.accountConfig.accountName}]Requesting ${request.paymentId}: ${now() - request.enqueuedAt}")
         account.httpClient.newCall(httpRequest).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                logger.warn("[${account.accountConfig.accountName}]Processed ${request.paymentId}: ${now() - request.enqueuedAt}")
-                logger.warn("[${account.accountConfig.accountName}]Avg time in queue: ${account.timeStatistics.getAverage()}")
-                account.timeStatistics.reportExecution((now() - request.enqueuedAt).toDouble() / 1000)
-
                 account.callbackExecutor.submit {
+                    logger.warn("[${account.accountConfig.accountName}]Avg time in queue: ${account.timeStatistics.getAverage()}")
+                    account.timeStatistics.reportExecution((now() - request.enqueuedAt).toDouble() / 1000)
                     when (e) {
                         is SocketTimeoutException -> {
                             paymentESService.update(request.paymentId) {
@@ -153,26 +153,23 @@ class PaymentExternalServiceImpl(
 
                         else -> {
                             logger.error("[${account.accountConfig.accountName}] Payment failed for txId: ${request.transactionId}, payment: ${request.paymentId}", e)
-
                             paymentESService.update(request.paymentId) {
                                 it.logProcessing(false, now(), request.transactionId, reason = e.message)
                             }
                         }
                     }
                     accountService.resetRateLimit()
+                    account.resetRateLimiter()
                 }
             }
 
             override fun onResponse(call: Call, response: Response) {
-                logger.warn("[${account.accountConfig.accountName}]Processed ${request.paymentId}: ${now() - request.enqueuedAt}")
-                logger.warn("[${account.accountConfig.accountName}]Avg time in queue: ${account.timeStatistics.getAverage()}")
-                account.timeStatistics.reportExecution((now() - request.enqueuedAt).toDouble() / 1000)
-
                 account.callbackExecutor.submit {
+                    logger.warn("[${account.accountConfig.accountName}]Avg time in queue: ${account.timeStatistics.getAverage()}")
+                    account.timeStatistics.reportExecution((now() - request.enqueuedAt).toDouble() / 1000)
                     val body = try {
                         mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
                     } catch (e: Exception) {
-                        logger.error("[${account.accountConfig.accountName}] [ERROR] Payment processed for txId: ${request.transactionId}, payment: ${request.paymentId}, result code: ${response.code}, reason: ${response.body?.string()}")
                         ExternalSysResponse(false, e.message)
                     }
 
@@ -181,8 +178,10 @@ class PaymentExternalServiceImpl(
                     paymentESService.update(request.paymentId) {
                         it.logProcessing(body.result, now(), request.transactionId, reason = body.message)
                     }
+                    logger.warn("Success now is ${processedSuccess.incrementAndGet()}")
+                    accountService.resetRateLimit()
+                    account.resetRateLimiter()
                 }
-                accountService.resetRateLimit()
             }
         })
     }

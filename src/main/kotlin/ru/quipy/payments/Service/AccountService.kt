@@ -17,9 +17,11 @@ class AccountService {
     val logger = LoggerFactory.getLogger(AccountService::class.java)
     private val accounts = ExternalServicesConfig.usedAccounts.map { Account(it) }.sortedBy { it.accountConfig.cost }
 
-    public val incomingQueue = PriorityBlockingQueue<PaymentRequest>(3000, PaymentRequestComparator)
+    public val incomingQueue = LinkedBlockingQueue<PaymentRequest>(3000)
     public val incomingExecutor = Executors.newFixedThreadPool(3);
-    val rateLimiter = RateLimiter.of("incoming-ratelimiter",
+
+    val rateLimiter = RateLimiter.of(
+        "incoming-ratelimiter",
         RateLimiterConfig.custom()
             .limitRefreshPeriod(Duration.ofSeconds(1))
             .limitForPeriod(getLimit())
@@ -42,10 +44,18 @@ class AccountService {
         rateLimiter.changeLimitForPeriod(limit)
     }
 
+    private fun getStartLimit() : Int {
+        var summary = 0.0;
+        for (account in accounts) {
+            summary += min(account.accountConfig.parallelRequests / account.accountConfig.request95thPercentileProcessingTime.seconds.toDouble(), account.accountConfig.rateLimitPerSec.toDouble())
+        }
+        return summary.toInt()
+    }
+
     private fun getLimit() : Int {
         var summary = 0.0;
         for (account in accounts) {
-            summary += min(account.accountConfig.parallelRequests / account.timeStatistics.getAverage(), account.accountConfig.rateLimitPerSec.toDouble())
+            summary += account.getRpsDouble()
         }
         return summary.toInt()
     }

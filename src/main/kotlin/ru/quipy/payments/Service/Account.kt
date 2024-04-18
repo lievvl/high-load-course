@@ -1,5 +1,7 @@
 package ru.quipy.payments.Service
 
+import io.github.resilience4j.bulkhead.Bulkhead
+import io.github.resilience4j.bulkhead.BulkheadConfig
 import io.github.resilience4j.ratelimiter.RateLimiter
 import io.github.resilience4j.ratelimiter.RateLimiterConfig
 import io.github.resilience4j.ratelimiter.RateLimiterRegistry
@@ -17,35 +19,51 @@ import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.TimeUnit
+import kotlin.math.min
 import kotlin.time.Duration.Companion.seconds
 
 class Account(
     val accountConfig: ExternalServiceProperties
 ) {
     val logger = LoggerFactory.getLogger(Account::class.java)
+
     val processExecutor = Executors.newFixedThreadPool(accountConfig.parallelRequests, NamedThreadFactory("process-${accountConfig.accountName}"))
-    val httpExecutor = Executors.newFixedThreadPool(128, NamedThreadFactory("process-${accountConfig.accountName}"))
-    val callbackExecutor = Executors.newFixedThreadPool(accountConfig.parallelRequests, NamedThreadFactory("process-${accountConfig.accountName}"))
+    val httpExecutor = Executors.newFixedThreadPool(accountConfig.parallelRequests, NamedThreadFactory("process-${accountConfig.accountName}"))
+    val callbackExecutor = Executors.newFixedThreadPool(accountConfig.parallelRequests, NamedThreadFactory("callback-${accountConfig.accountName}"))
+
     val httpClient = OkHttpClient.Builder()
-        .dispatcher(Dispatcher(httpExecutor).apply { maxRequests = accountConfig.parallelRequests; maxRequestsPerHost = accountConfig.parallelRequests })
+        .dispatcher(Dispatcher(httpExecutor).apply { maxRequests = 400; maxRequestsPerHost = 400 })
         .protocols(Collections.singletonList(Protocol.H2_PRIOR_KNOWLEDGE))
         .connectionPool(ConnectionPool(accountConfig.parallelRequests, PaymentExternalServiceImpl.paymentOperationTimeout.seconds, TimeUnit.SECONDS))
         .build()
 
-    val queue = PriorityBlockingQueue<PaymentRequest>(accountConfig.parallelRequests, PaymentRequestComparator)
+    val queue = LinkedBlockingQueue<PaymentRequest>()
+    val bulkhead = Bulkhead.of(
+        "bulkhead-${accountConfig.accountName}",
+        BulkheadConfig.custom()
+            .maxConcurrentCalls(accountConfig.parallelRequests)
+            .maxWaitDuration(PaymentExternalServiceImpl.paymentOperationTimeout)
+            .build()
+    )
 
-    val timeStatistics = DoubleSummary(accountConfig.request95thPercentileProcessingTime.seconds.toDouble(), 10) //В СЕКУНДАХ!!!!!
+    val timeStatistics = DoubleSummary(accountConfig.request95thPercentileProcessingTime.seconds.toDouble(), 40) //В СЕКУНДАХ!!!!!
+
+    val rateLimiter = RateLimiter.of("ratelimiter-account-${accountConfig.accountName}",
+        RateLimiterConfig.custom()
+            .limitRefreshPeriod(Duration.ofSeconds(1))
+            .limitForPeriod(getRps())
+            .timeoutDuration(PaymentExternalServiceImpl.paymentOperationTimeout)
+            .build()
+    )
 
     fun tryEnqueue(paymentRequest: PaymentRequest): Boolean {
-        if (((timeStatistics.getAverage() * queue.size  + (now() - paymentRequest.paymentStartedAt) / 1000) < PaymentExternalServiceImpl.paymentOperationTimeout.seconds) &&
-            queue.remainingCapacity() > 0)
+        if ((getProcessingTimeIfInserting(paymentRequest) < PaymentExternalServiceImpl.paymentOperationTimeout.seconds))
         {
             queue.add(paymentRequest);
             paymentRequest.enqueuedAt = now()
             return true;
         }
-        if ((timeStatistics.getAverage() * queue.size  + (now() - paymentRequest.paymentStartedAt) / 1000)
-            < PaymentExternalServiceImpl.paymentOperationTimeout.seconds)
+        if (getProcessingTimeIfInserting(paymentRequest) < PaymentExternalServiceImpl.paymentOperationTimeout.seconds)
         {
             logger.warn("Cannot enqueue because of time ${accountConfig.accountName}")
         } else {
@@ -54,6 +72,30 @@ class Account(
 
         return false;
     }
+
+    fun getProcessingTimeIfInserting(paymentRequest: PaymentRequest) : Double {
+        return timeStatistics.getAverage() * (queue.size + 1)  + (now() - paymentRequest.paymentStartedAt) / 1000
+    }
+
+    fun resetRateLimiter() {
+        val limit = getRps()
+        logger.warn("Now ratelimit is ${limit}")
+        rateLimiter.changeLimitForPeriod(limit)
+    }
+
+    fun getRps() : Int {
+        val ans = min(accountConfig.parallelRequests / timeStatistics.getAverage(), accountConfig.rateLimitPerSec.toDouble()).toInt()
+        logger.warn("${accountConfig.accountName} Now rps is ${ans}")
+        if (ans <= 0) {
+            return 1;
+        }
+        return ans
+    }
+
+    fun getRpsDouble(): Double {
+        return min(accountConfig.parallelRequests / timeStatistics.getAverage(), accountConfig.rateLimitPerSec.toDouble());
+    }
+
 
     private fun now() = System.currentTimeMillis();
 }

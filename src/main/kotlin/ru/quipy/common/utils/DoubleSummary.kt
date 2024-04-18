@@ -15,9 +15,12 @@ class DoubleSummary(private val initial: Double, private val activeAfterNExecuti
     }
 
     fun getAverage(): Double {
-        if (activeAfterNExecutions > count)
+        if (count >= activeAfterNExecutions) {
+            return sum / count
+        }
+        if (count.toInt() == 0) {
             return initial
-
-        return sum / count
+        }
+        return (count.toDouble() / activeAfterNExecutions) * (sum / count) + ((activeAfterNExecutions.toDouble() - count) / activeAfterNExecutions) * initial
     }
 }

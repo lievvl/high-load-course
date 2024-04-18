@@ -58,7 +58,7 @@ class ExternalServicesConfig(
             cost = 30,
         )
 
-        val usedAccounts = listOf(accountProps_2, accountProps_3)
+        val usedAccounts = listOf(accountProps_2, accountProps_3, accountProps_4)
     }
 
     @Bean(PRIMARY_PAYMENT_BEAN)
